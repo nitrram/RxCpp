@@ -100,7 +100,7 @@ public:
 
 template<class... MakeObserverArgN>
 auto tap(MakeObserverArgN&&... an)
-    ->      detail::tap_factory<std::tuple<rxu::decay_t<MakeObserverArgN>...>> {
+	-> decltype(detail::tap_factory<std::tuple<rxu::decay_t<MakeObserverArgN>...>>(std::make_tuple(std::forward<MakeObserverArgN>(an)...))) {
     return  detail::tap_factory<std::tuple<rxu::decay_t<MakeObserverArgN>...>>(std::make_tuple(std::forward<MakeObserverArgN>(an)...));
 }
 

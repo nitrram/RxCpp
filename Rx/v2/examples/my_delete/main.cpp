@@ -49,23 +49,69 @@ template<typename T>
 class safe_observable {
 public:
 
-	safe_observable(rx::observable<T> t) : in_progress(false) {
-		//obs = t | rxo::finally([]() { if(in_progress) });
+	safe_observable(rx::observable<T> t) {
+		obs = t | rxo::finally([this]() { std::lock_guard<std::recursive_mutex> lck(mtx); });
 	}
 
+	~safe_observable() {
+		std::cout << "safe_observable destructed\n";
+	}
 
-	// void subscribe();
+	rx::composite_subscription subscribe()
+	{
+		return obs.subscribe();
+	}
 
-	// void subscribe(std::function<void(T)>);
+	rx::composite_subscription subscribe(std::function<void(T)> on_next)
+	{
+		return obs.subscribe(
+			[this,on_next](T result) {
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+				on_next(result);
+			});
+	}
 
-	// void subscribe(std::function<void(T)>, std::function<void(std::exception_ptr)>);
+	rx::composite_subscription subscribe(
+		std::function<void(T)> on_next,
+		std::function<void(std::exception_ptr)> on_error
+	)
+	{
+		return obs.subscribe(
+			[this, on_next](T result) {
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+				on_next(result);
+			},
+			[this, on_error](std::exception_ptr ex) {
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+				on_error(ex);
+			});
+	}
 
-	// void subscribe(std::function<void(T)>, std::function<void(std::exception_ptr)>, std::function<void()>) {}
+	rx::composite_subscription subscribe(
+		std::function<void(T)> on_next,
+		std::function<void(std::exception_ptr)> on_error,
+		std::function<void()> on_completed
+	)
+	{
+		return obs.subscribe(
+			[this, on_next](T result) {
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+				on_next(result);
+			},
+			[this, on_error](std::exception_ptr ex) {
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+				on_error(ex);
+			},
+			[this, on_completed]() {
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+				on_completed();
+			}
+			);
+	}
 
 private:
 	rx::observable<T> obs;
 	std::recursive_mutex mtx;
-	bool in_progress;
 };
 
 
@@ -80,13 +126,12 @@ int main()
 	using ms = std::chrono::milliseconds;
 	using fsec = std::chrono::duration<float>;
 
-	std::mutex mutex;
 	CWrapper *cw = new CWrapper();
 
 	auto observable = rx::observable<>::create<int>(
 		[](rx::subscriber<int> s) {
 
-			//s.add(rx::make_subscription([&]() { cv.notify_all(); }));
+			//s.add(rx::make_subscription([&]() { std::cout << "internal unsubscribe " << std::this_thread::get_id() << std::endl; }));
 			auto t0 = tt::now();
 			std::this_thread::sleep_for(ms(2000));
 			auto t1 = tt::now();
@@ -95,29 +140,36 @@ int main()
 
 			s.on_next(std::chrono::duration_cast<ms>(diff).count());
 
+			// predchozi on next subscription zpusobi unsubscribci, takze sem uz se nedostanu
+			std::this_thread::sleep_for(ms(200));
+
+			s.on_next(88231);
+
 			s.on_completed();
 		}
-	) | rxo::finally([&](){
-			std::lock_guard<std::mutex> crit(mutex);
-			std::cout << "finally\n"; }) |
-		rxo::subscribe_on(rx::observe_on_new_thread());
+	) |	rxo::subscribe_on(rx::observe_on_new_thread());
 
-	auto sub = observable.subscribe([&](int d) {
+	rx::composite_subscription sub;
+	{
+		//tento objekt zije jen v lokalnim scope
+		safe_observable<int> ssub(observable);
 
-			std::lock_guard<std::mutex> crit(mutex);
-			// uvolni cekajici vlakno, aby mohlo smazat captured promennou pod rukama
-			std::unique_lock<std::mutex> lck(simMtx);
-			simTrigger = true;
-			lck.unlock();
-			simCondition.notify_all();
+		sub = ssub.subscribe([&](int d) {
 
-			// pockej, aby mazaci vlakno melo cas smazat objekt
-			std::this_thread::sleep_for(ms(500));
+				// uvolni cekajici vlakno, aby mohlo smazat captured promennou pod rukama
+				std::unique_lock<std::mutex> lck(simMtx);
+				simTrigger = true;
+				lck.unlock();
+				simCondition.notify_all();
 
-			std::cout << "segfault?\n";
-			cw->cb->onCalled(d);
-		}
-		);
+				// pockej, aby mazaci vlakno melo cas smazat objekt
+				std::this_thread::sleep_for(ms(500));
+
+				std::cout << "segfault?\n";
+				cw->cb->onCalled(d);
+			}
+			);
+	}
 
 	//#############case 1
 	//sub.unsubscribe(); // callback se nikdy neprovola(nestihne to)

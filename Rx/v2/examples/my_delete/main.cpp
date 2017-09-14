@@ -49,8 +49,9 @@ template<typename T>
 class safe_observable {
 public:
 
-	safe_observable(rx::observable<T> t) {
-		obs = t | rxo::finally([this]() { std::lock_guard<std::recursive_mutex> lck(mtx); });
+	static safe_observable<T> *wrap_observable(rx::observable<T> t)
+	{
+		return new safe_observable<T>(t);
 	}
 
 	~safe_observable() {
@@ -65,7 +66,7 @@ public:
 	rx::composite_subscription subscribe(std::function<void(T)> on_next)
 	{
 		return obs.subscribe(
-			[this,on_next](T result) {
+			[=](T result) {
 				std::lock_guard<std::recursive_mutex> lck(mtx);
 				on_next(result);
 			});
@@ -77,11 +78,11 @@ public:
 	)
 	{
 		return obs.subscribe(
-			[this, on_next](T result) {
+			[=](T result) {
 				std::lock_guard<std::recursive_mutex> lck(mtx);
 				on_next(result);
 			},
-			[this, on_error](std::exception_ptr ex) {
+			[=](std::exception_ptr ex) {
 				std::lock_guard<std::recursive_mutex> lck(mtx);
 				on_error(ex);
 			});
@@ -110,6 +111,15 @@ public:
 	}
 
 private:
+
+	safe_observable(rx::observable<T> t) {
+		obs = t | rxo::finally([=]() {
+				std::unique_ptr<safe_observable> thizz_to_delete(this);
+				std::lock_guard<std::recursive_mutex> lck(mtx);
+			});
+	}
+
+private:
 	rx::observable<T> obs;
 	std::recursive_mutex mtx;
 };
@@ -132,16 +142,22 @@ int main()
 		[](rx::subscriber<int> s) {
 
 			//s.add(rx::make_subscription([&]() { std::cout << "internal unsubscribe " << std::this_thread::get_id() << std::endl; }));
+			std::cout << "in observable 0\n";
 			auto t0 = tt::now();
 			std::this_thread::sleep_for(ms(2000));
 			auto t1 = tt::now();
 
+			std::cout << "in observable 1\n";
 			fsec diff = t1 - t0;
 
 			s.on_next(std::chrono::duration_cast<ms>(diff).count());
 
+			std::cout << "in observable 2\n";
+
 			// predchozi on next subscription zpusobi unsubscribci, takze sem uz se nedostanu
 			std::this_thread::sleep_for(ms(200));
+
+			std::cout << "in observable 3\n";
 
 			s.on_next(88231);
 
@@ -152,10 +168,11 @@ int main()
 	rx::composite_subscription sub;
 	{
 		//tento objekt zije jen v lokalnim scope
-		safe_observable<int> ssub(observable);
+		safe_observable<int> *ssub = safe_observable<int>::wrap_observable(observable);
 
-		sub = ssub.subscribe([&](int d) {
+		sub = ssub->subscribe([&](int d) {
 
+				std::cout << "safeObs subscribed\n";
 				// uvolni cekajici vlakno, aby mohlo smazat captured promennou pod rukama
 				std::unique_lock<std::mutex> lck(simMtx);
 				simTrigger = true;
@@ -169,6 +186,9 @@ int main()
 				cw->cb->onCalled(d);
 			}
 			);
+
+		//delete ssub;
+		//ssub = nullptr;
 	}
 
 	//#############case 1
@@ -178,6 +198,7 @@ int main()
 	auto deleter = rx::observable<>::create<int>(
 		[&](rx::subscriber<int> s) {
 
+			std::cout << "waitin..\n";
 			//pockej nez se zacne provadet lambda v subscribci
 			{
 				std::unique_lock<std::mutex> lck(simMtx);
@@ -191,7 +212,9 @@ int main()
 			}
 
 			//###############case 2
+			std::cout << "sub about to unsubscribe\n";
 			sub.unsubscribe(); // pokud callback probiha, je zamkly, toto je blokujici
+			std::cout << "sub unsubscribed\n";
 			delete cw;
 			cw = nullptr;
 

@@ -7,8 +7,11 @@
 // these are owned by the user so that
 // conflicts can be managed by the user.
 namespace rx=rxcpp;
+namespace rxo=rx::operators;
 namespace rxsub=rxcpp::subjects;
 namespace rxu=rxcpp::util;
+
+using namespace std::chrono;
 
 // At this time, RxCpp will fail to compile if the contents
 // of the std namespace are merged into the global namespace
@@ -27,44 +30,45 @@ int main()
 	std::condition_variable m_SimCondition;
 	bool m_SimTrigger = false;
 	
-	int callCnt = 0;
+	std::atomic<bool> timeout(false);
 
+//	auto emitter = rx::observable<>::
 
 	auto true_observable =
 		rx::observable<>::create<bool>(
-			[](rx::subscriber<bool> s)
+			[&](rx::subscriber<bool> s)
 			{
-				std::this_thread::sleep_for(std::chrono::seconds(3));
-				s.on_next(true);
+				std::cout << "true_observable working...\n";
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+				if(!timeout.exchange(true)) {
+					s.on_next(true);
+				}
 
 				s.on_completed();
 			}
 		);
 
 	auto false_observable =
-		rx::observable<>::just(false);
-		
+		rx::observable<>::just(false) | rxo::tap([](bool /*val*/) { std::cout << "false_observable working...\n"; });
 
 
-	auto subs = false_observable.delay(std::chrono::seconds(2),rx::observe_on_new_thread()).merge(true_observable).subscribe(
-		[&](bool i) {
-			std::cout << i << std::endl;
+	// 0 then 1
+	auto subs = false_observable.delay(std::chrono::seconds(2),rx::observe_on_new_thread()).concat(true_observable).
+		take(1).subscribe_on(rx::observe_on_new_thread()).subscribe(
+			[&](bool i) {
+				std::cout << i << std::endl;
+				timeout.exchange(true);
 
-			if(++callCnt >= 2) {
+
 				std::unique_lock<std::mutex> lck(m_SimMtx);
 				m_SimTrigger = true;
 				lck.unlock();
 				m_SimCondition.notify_all();
+
 			}
-		}
-	);
+		);
 
-
-	//std::this_thread::sleep_for(std::chrono::seconds(3));
-
-
-//	subs.unsubscribe();
-
+	
 	std::unique_lock<std::mutex> lck(m_SimMtx);
 	m_SimCondition.wait(
 		lck,

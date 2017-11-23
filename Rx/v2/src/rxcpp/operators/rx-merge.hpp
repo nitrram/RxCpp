@@ -278,6 +278,7 @@ struct merge_error_delay
 						if(state->pendingCompletions == 0) {
 							state->out.on_error(e);
 						} else {
+							--state->pendingCompletions;
 							state->lastExceptions.push_back(e);
 						}
 					},

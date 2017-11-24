@@ -18,41 +18,95 @@ using namespace std::chrono;
 // of the std namespace are merged into the global namespace
 // DO NOT USE: 'using namespace std;'
 
-#define UNLOCK() std::unique_lock<std::mutex> lck(m_SimMtx); \
-	m_SimTrigger = true;									 \
-	lck.unlock();											 \
+#define UNLOCK() std::unique_lock<std::mutex> lck(m_SimMtx);	\
+	m_SimTrigger = true;										\
+	lck.unlock();												\
 	m_SimCondition.notify_all();
 
 
 std::mutex mtx;
 std::condition_variable cv;
-bool isActive;
 
-std::function<void(rx::subscriber<bool>)> create_subscriber_function(unsigned seconds_delay)
+
+
+std::function<void(rx::subscriber<bool>)> create_subscriber_function(unsigned seconds_delay, bool output = true, bool is_error = false)
 {
-	return [seconds_delay](rx::subscriber<bool> s)
-			{
-				
-				std::cout << "true_observable[" << seconds_delay << "] working...\n";
-				auto t0 = std::chrono::high_resolution_clock::now();
-				std::this_thread::sleep_for(std::chrono::seconds(seconds_delay));
+	return [seconds_delay,output, is_error](rx::subscriber<bool> s)
+	{
+		s.add(rx::make_subscription([](){ std::cout << "online finish execution\n"; }));
 
-				auto t1 = std::chrono::high_resolution_clock::now();
-				
-				if(isActive) {
-					std::cout << "true_observable[" << seconds_delay << "] took " << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()<< "[ms]\n";
-					s.on_next(true);
+		std::cout << "true_observable[" << seconds_delay << "] working...\n";
+		auto t0 = std::chrono::high_resolution_clock::now();
+		std::this_thread::sleep_for(std::chrono::seconds(seconds_delay));
 
-					s.on_completed();
-				}
-			};
+		auto t1 = std::chrono::high_resolution_clock::now();
+		std::cout << "true_observable[" << seconds_delay << "] took " << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()<< "[ms]\n";
+
+		if(is_error) {
+
+			s.on_error(std::make_exception_ptr<std::logic_error>(std::logic_error("failed")));
+		}
+
+		s.on_next(output);
+
+		s.on_completed();
+	};
 }
 
-rx::observable<bool> create_timed_observable_false(rx::observable<bool> false_observable)
+struct slocker {
+
+public:
+	slocker() : sactiv(true), strig(false) {}
+
+	std::atomic<bool> sactiv;
+	std::atomic<bool> strig;
+};
+
+
+rx::observable<bool> cto2(rx::observable<bool> online, rx::observable<bool> offline)
 {
-	return rx::observable<>::timer(seconds(2)) |
-		rxo::flat_map([false_observable](int /*s*/) { return false_observable; }) |
-		rxo::subscribe_on(rx::observe_on_new_thread());
+	// trigger, active
+	using tlock = std::shared_ptr<slocker>;
+
+	return rx::observable<>::just(tlock(new slocker())) |
+		rxo::flat_map(
+			[offline, online](tlock t)
+			{
+				using namespace std::chrono;
+
+				auto timedOffline = rx::observable<>::create<int>(
+					[=](rx::subscriber<int> s)
+					{
+						using namespace std::chrono;
+
+						auto t0 = high_resolution_clock::now();
+						time_point<high_resolution_clock> t1;
+						while(!t->strig.load()) {
+							std::this_thread::sleep_for(milliseconds(10));
+							t1 = high_resolution_clock::now();
+							if(duration_cast<milliseconds>(t1 - t0).count() > 2000) {
+								t->strig.store(true);
+							}
+						}
+
+						if(t->sactiv.exchange(false)) {
+							s.on_next(1);
+							s.on_completed();
+						}
+					} ) |
+					rxo::flat_map([offline](int){ return offline; }) | rxo::subscribe_on(rx::observe_on_new_thread());
+
+
+				auto threadedOnline = online |
+					rxo::tap([=](bool){ std::cout << "tap inactive\n";
+										t->sactiv.store(false); }) | // kdyz prijde vysledek
+					rxo::finally([=](){ std::cout << "online finished\n";
+										t->strig.store(true); }) | // po dokonceni
+					rxo::subscribe_on(rx::observe_on_new_thread());
+
+				return threadedOnline.subscribe_on(rx::observe_on_new_thread()).merge_error_delay(timedOffline).take(1);
+			} );
+
 }
 
 int main()
@@ -60,45 +114,37 @@ int main()
 	std::mutex m_SimMtx;
 	std::condition_variable m_SimCondition;
 	bool m_SimTrigger = false;
-	isActive = true;
-	
+
 
 	auto true_observable_short =
 		rx::observable<>::create<bool>(
 			create_subscriber_function(1)
-		) | rxo::subscribe_on(rx::observe_on_new_thread());
+		);
 
 
 	auto true_observable_long =
 		rx::observable<>::create<bool>(
 			create_subscriber_function(4)
-		) | rxo::subscribe_on(rx::observe_on_new_thread());
+		);
 
 
 	auto false_observable =
 		rx::observable<>::just(false) | rxo::tap([](bool /*val*/) { std::cout << "false_observable working...\n"; });
 
 	std::unique_lock<std::mutex> lck(m_SimMtx, std::defer_lock);
-	std::atomic<bool> fuse(true);
 
 	//==============================================================================================================================
 
 	std::cout << "\n\n======TESTING sequqence======\n";
 	auto t0 = std::chrono::high_resolution_clock::now();
 	// normal sequence
-	auto subs = true_observable_short.
-		merge_error_delay(create_timed_observable_false(false_observable)).
-		take(1).
-		subscribe(
-			[&](bool i) {
-				if(fuse.exchange(true))
-				{
-					std::cout << i << std::endl;
-					UNLOCK()
-				}
+	auto subs = cto2(true_observable_short, false_observable).subscribe(
+		[&](bool i) {
+			std::cout << i << std::endl;
+			UNLOCK()
+		}
+	);
 
-			}
-		);
 	lck.lock();
 	m_SimCondition.wait(
 		lck,
@@ -108,8 +154,6 @@ int main()
 		}
 	);
 	m_SimTrigger = false;
-	isActive = false;
-	fuse.store(true);
 	subs.unsubscribe();
 	lck.unlock();
 	auto t1 = std::chrono::high_resolution_clock::now();
@@ -119,20 +163,14 @@ int main()
 	std::cout << "\n\n======TESTING overtake======\n";
 	t0 = std::chrono::high_resolution_clock::now();
 	// overtake
-	isActive = true;
-	subs = true_observable_long.
-		merge_error_delay(create_timed_observable_false(false_observable)).
-		take(1).
-		subscribe(
-			[&](bool i) {
-				if(fuse.exchange(false))
-				{
-					std::cout << i << std::endl;
-					UNLOCK()
-				}
+	subs = cto2(true_observable_long, false_observable).subscribe(
+		[&](bool i)
+		{
+			std::cout << i << std::endl;
+			UNLOCK()
+		}
+	);
 
-			}
-		);
 	lck.lock();
 	m_SimCondition.wait(
 		lck,
@@ -142,8 +180,7 @@ int main()
 		}
 	);
 	m_SimTrigger = false;
-	isActive = false;
-	fuse.store(true);
+
 	subs.unsubscribe();
 	lck.unlock();
 	t1 = std::chrono::high_resolution_clock::now();
@@ -153,37 +190,22 @@ int main()
 
 	rx::observable<bool> test0, test1, teste;
 
-	teste = rx::observable<>::create<bool>([](rx::subscriber<bool> s) {
+	teste = rx::observable<>::create<bool>(
+		create_subscriber_function(1, true, true)
+	);
 
-			s.on_error(std::make_exception_ptr<std::logic_error>(std::logic_error("fail")));
-			
-			s.on_next(true);
+	test0 = rx::observable<>::just(true);
+	test1 = rx::observable<>::just(false);
 
-			s.on_completed();
-			
-		} ) | rxo::subscribe_on(rx::observe_on_new_thread());
-		
-	test0 = rx::observable<>::just(true); // | rxo::subscribe_on(rx::observe_on_new_thread());
-	test1 = rx::observable<>::just(false); // | rxo::subscribe_on(rx::observe_on_new_thread());
+	std::cout << "\n\n========TESTING error=======\n";
 
-	std::cout << "\n\n======TESTING error======\n";
-	subs = teste.merge_error_delay(create_timed_observable_false(test1), create_timed_observable_false(test0)).subscribe(
-		[&](bool v) {
-			if(fuse.exchange(false)) {
-				std::cout << v << std::endl;
-				UNLOCK()
-			}
-		},
-		[&](std::exception_ptr ep) {
-			
-			try{
-				std::rethrow_exception(ep);
-			}
-			catch(std::logic_error e) {
-				std::cout << "logic error: " << e.what() << std::endl;
-			}
-			UNLOCK()
-		} );
+
+	std::cout << "======[ ..... 1 ...... ]======\n";
+	t0 = std::chrono::high_resolution_clock::now();
+	cto2(teste, test0).subscribe(
+		[&](bool i) { std::cout << i << std::endl; UNLOCK() },
+		[&](std::exception_ptr) { }
+	);
 
 	lck.lock();
 	m_SimCondition.wait(
@@ -194,13 +216,32 @@ int main()
 		}
 	);
 	m_SimTrigger = false;
-	isActive = false;
-	fuse.store(true);
-	subs.unsubscribe();
 	lck.unlock();
 
-	
+	t1 = std::chrono::high_resolution_clock::now();
+	std::cout << "error 2s delayed seq took: " << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()<< "[ms]\n";
 
-	
-    return 0;
+	std::cout << "\n======[ ..... 0 ...... ]======\n";
+	t0 = std::chrono::high_resolution_clock::now();
+	cto2(teste, test1).subscribe(
+		[&](bool i) { std::cout << i << std::endl; UNLOCK() },
+		[&](std::exception_ptr) { }
+	);
+
+	lck.lock();
+	m_SimCondition.wait(
+		lck,
+		[&]
+		{
+			return m_SimTrigger;
+		}
+	);
+	m_SimTrigger = false;
+	lck.unlock();
+
+	t1 = std::chrono::high_resolution_clock::now();
+	std::cout << "error 2s delayed seq took: " << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()<< "[ms]\n";
+
+
+	return 0;
 }

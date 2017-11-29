@@ -17,18 +17,22 @@ template<class T, class Observable, class Count>
 struct take : public operator_base<T>
 {
     typedef rxu::decay_t<Observable> source_type;
-    typedef rxu::decay_t<Count> count_type;
+	typedef rxu::decay_t<Count> count_type;
+	typedef std::atomic<count_type> atomic_count_type;
+	typedef std::shared_ptr<atomic_count_type> satomic_count_type;
     struct values
     {
         values(source_type s, count_type t)
             : source(std::move(s))
-            , count(std::move(t))
+			, count(std::make_shared<atomic_count_type>(std::move(t)))
         {
         }
+
         source_type source;
-        count_type count;
+		satomic_count_type count;
     };
     values initial;
+
 
     take(source_type s, count_type t)
         : initial(std::move(s), std::move(t))
@@ -53,7 +57,7 @@ struct take : public operator_base<T>
             : public std::enable_shared_from_this<state_type>
             , public values
         {
-            state_type(const values& i, const output_type& oarg)
+			state_type(const values& i, const output_type& oarg)
                 : values(i)
                 , mode_value(mode::taking)
                 , out(oarg)
@@ -73,9 +77,9 @@ struct take : public operator_base<T>
         // split subscription lifetime
             source_lifetime,
         // on_next
-            [state, source_lifetime](T t) {
+			[state, source_lifetime, this](T t) {
                 if (state->mode_value < mode::triggered) {
-                    if (--state->count > 0) {
+					if (--(*state->count) > 0) {
                         state->out.on_next(t);
                     } else {
                         state->mode_value = mode::triggered;

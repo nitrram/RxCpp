@@ -1815,6 +1815,131 @@ public:
         return          defer_merge_from<Coordination, Value0>::make(*this, rxs::from(this->as_dynamic(), v0.as_dynamic(), vn.as_dynamic()...), std::move(cn));
     }
 
+	/// \cond SHOW_SERVICE_MEMBERS
+	template<class Coordination>
+	struct defer_merge_error_delay : public defer_observable<
+		is_observable<value_type>,
+		this_type,
+		rxo::detail::merge_error_delay, value_type, observable<value_type>, Coordination>
+	{
+	};
+
+	/// \endcond
+
+	/*! For each item from this observable subscribe.
+		For each item from all of the nested observables deliver from the new observable that is returned.
+
+		\return  Observable that emits items that are the result of flattening the observables emitted by the source observable.
+
+		\note All sources must be synchronized! This means that calls across all the subscribers must be serial. Errors are emitted at the end
+
+		\sample
+		\snippet merge.cpp implicit merge sample
+		\snippet output.txt implicit merge sample
+	*/
+	template<class... AN>
+	auto merge_error_delay(AN**...) const
+		/// \cond SHOW_SERVICE_MEMBERS
+		-> typename defer_merge_error_delay<identity_one_worker>::observable_type
+		/// \endcond
+	{
+		return      defer_merge_error_delay<identity_one_worker>::make(*this, *this, identity_current_thread());
+		static_assert(sizeof...(AN) == 0, "merge_error_delay() was passed too many arguments.");
+	}
+
+	/*! For each item from this observable subscribe.
+		For each item from all of the nested observables deliver from the new observable that is returned.
+
+		\tparam Coordination  the type of the scheduler
+
+		\param  cn  the scheduler to synchronize sources from different contexts.
+
+		\return  Observable that emits items that are the result of flattening the observables emitted by the source observable.
+
+		\sample
+		\snippet merge.cpp threaded implicit merge sample
+		\snippet output.txt threaded implicit merge sample
+	*/
+	template<class Coordination>
+	auto merge_error_delay(Coordination cn) const
+		/// \cond SHOW_SERVICE_MEMBERS
+		->  typename std::enable_if<
+						defer_merge_error_delay<Coordination>::value,
+			typename    defer_merge_error_delay<Coordination>::observable_type>::type
+		/// \endcond
+	{
+		return          defer_merge_error_delay<Coordination>::make(*this, *this, std::move(cn));
+	}
+
+
+	/// \cond SHOW_SERVICE_MEMBERS
+	template<class Coordination, class Value0>
+	struct defer_merge_error_delay_from : public defer_observable<
+		rxu::all_true<
+			is_coordination<Coordination>::value,
+			is_observable<Value0>::value>,
+		this_type,
+		rxo::detail::merge_error_delay, observable<value_type>, observable<observable<value_type>>, Coordination>
+	{
+	};
+	/// \endcond
+
+	/*! For each given observable subscribe.
+		For each emitted item deliver from the new observable that is returned.
+
+		\tparam Value0  ...
+		\tparam ValueN  types of source observables
+
+		\param  v0  ...
+		\param  vn  source observables
+
+		\return  Observable that emits items that are the result of flattening the observables emitted by the source observable.
+
+		\note All sources must be synchronized! This means that calls across all the subscribers must be serial.
+
+		\sample
+		\snippet merge.cpp merge sample
+		\snippet output.txt merge sample
+	*/
+	template<class Value0, class... ValueN>
+	auto merge_error_delay(Value0 v0, ValueN... vn) const
+		/// \cond SHOW_SERVICE_MEMBERS
+		->  typename std::enable_if<
+						defer_merge_error_delay_from<identity_one_worker, Value0>::value,
+			typename    defer_merge_error_delay_from<identity_one_worker, Value0>::observable_type>::type
+		/// \endcond
+	{
+		return          defer_merge_error_delay_from<identity_one_worker, Value0>::make(*this, rxs::from(this->as_dynamic(), v0.as_dynamic(), vn.as_dynamic()...), identity_current_thread());
+	}
+
+	/*! For each given observable subscribe.
+		For each emitted item deliver from the new observable that is returned.
+
+		\tparam Coordination  the type of the scheduler
+		\tparam Value0        ...
+		\tparam ValueN        types of source observables
+
+		\param  cn  the scheduler to synchronize sources from different contexts.
+		\param  v0  ...
+		\param  vn  source observables
+
+		\return  Observable that emits items that are the result of flattening the observables emitted by the source observable.
+
+		\sample
+		\snippet merge.cpp threaded merge sample
+		\snippet output.txt threaded merge sample
+	*/
+	template<class Coordination, class Value0, class... ValueN>
+	auto merge_error_delay(Coordination cn, Value0 v0, ValueN... vn) const
+		/// \cond SHOW_SERVICE_MEMBERS
+		->  typename std::enable_if<
+						defer_merge_error_delay_from<Coordination, Value0>::value,
+			typename    defer_merge_error_delay_from<Coordination, Value0>::observable_type>::type
+		/// \endcond
+	{
+		return          defer_merge_error_delay_from<Coordination, Value0>::make(*this, rxs::from(this->as_dynamic(), v0.as_dynamic(), vn.as_dynamic()...), std::move(cn));
+	}
+
     /// \cond SHOW_SERVICE_MEMBERS
     template<class Coordination>
     struct defer_amb : public defer_observable<

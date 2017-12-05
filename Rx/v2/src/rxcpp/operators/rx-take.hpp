@@ -43,6 +43,9 @@ struct take : public operator_base<T>
 {
     typedef rxu::decay_t<Observable> source_type;
     typedef rxu::decay_t<Count> count_type;
+	typedef std::atomic<count_type> atomic_count_type;
+	typedef std::shared_ptr<atomic_count_type> satomic_count_type;
+
     struct values
     {
         values(source_type s, count_type t)
@@ -51,7 +54,7 @@ struct take : public operator_base<T>
         {
         }
         source_type source;
-        count_type count;
+        satomic_count_type count;
     };
     values initial;
 
@@ -100,7 +103,7 @@ struct take : public operator_base<T>
         // on_next
             [state, source_lifetime](T t) {
                 if (state->mode_value < mode::triggered) {
-                    if (--state->count > 0) {
+                    if (--(*state->count) > 0) {
                         state->out.on_next(t);
                     } else {
                         state->mode_value = mode::triggered;

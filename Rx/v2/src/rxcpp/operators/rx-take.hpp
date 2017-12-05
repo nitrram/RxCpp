@@ -50,7 +50,7 @@ struct take : public operator_base<T>
     {
         values(source_type s, count_type t)
             : source(std::move(s))
-            , count(std::move(t))
+            , count(std::make_shared<atomic_count_type>(std::move(t)))
         {
         }
         source_type source;
